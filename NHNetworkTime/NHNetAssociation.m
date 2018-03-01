@@ -86,7 +86,7 @@ double ntpDiffSeconds(NHTimeStamp *start, NHTimeStamp *stop) {
 
 @property (readonly) double dispersion; // milliSeconds
 @property (readonly) double roundtrip;  // seconds
-
+@property (strong, nonatomic) NSMutableArray *observers;
 @end
 
 @implementation NHNetAssociation
@@ -111,8 +111,11 @@ double ntpDiffSeconds(NHTimeStamp *start, NHTimeStamp *stop) {
     return self;
 }
 
+- (void)dealloc {
+    [self unregisterObservations];
+}
+
 - (void)enable {
-    
     // Create a first-in/first-out queue for time samples.  As we compute each new time obtained from the server we push it into the fifo.  We sample the contents of the fifo for quality and, if it meets our standards we use the contents of the fifo to obtain a weighted average of the times.
     for (short i = 0; i < 8; i++) fifoQueue[i] = NAN;   // set fifo to all empty
     self.fifoIndex = 0;
@@ -375,36 +378,51 @@ double ntpDiffSeconds(NHTimeStamp *start, NHTimeStamp *stop) {
 }
 
 #pragma mark - Notification Traps
+- (void)unregisterObservations {
+    for (id observer in self.observers) {
+        [[NSNotificationCenter defaultCenter] removeObserver:observer];
+    }
+    [self.observers removeAllObjects];
+}
 
 - (void)registerObservations {
+    [self unregisterObservations];
+    self.observers = [NSMutableArray array];
 
+    __weak typeof(self) weakSelf = self;
     // if associations are going to have a life, they have to react to their app being backgrounded.
     
-	[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
-													  object:nil queue:nil
-												  usingBlock:^
-	 (NSNotification * note) {
-		 NTP_Logging(@"Application -> Background");
-		 [self finish];
-	 }];
+    [self.observers addObject:
+     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                       object:nil queue:nil
+                                                   usingBlock:^
+      (NSNotification * note) {
+          NTP_Logging(@"Application -> Background");
+          [weakSelf finish];
+      }]];
 
-	[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
-													  object:nil queue:nil
-												  usingBlock:^
-	 (NSNotification * note) {
-		 NTP_Logging(@"Application -> Foreground");
-		 [self enable];
-	 }];
+    [self.observers addObject:
+     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
+                                                       object:nil queue:nil
+                                                   usingBlock:^
+      (NSNotification * note) {
+          NTP_Logging(@"Application -> Foreground");
+          [weakSelf enable];
+      }]];
 
     // significantTimeChange -- trash the fifo ..
-	[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationSignificantTimeChangeNotification
-													  object:nil queue:nil
-												  usingBlock:^
-	 (NSNotification * note) {
-		 NTP_Logging(@"Application -> SignificantTimeChange");
-		 for (short i = 0; i < 8; i++) fifoQueue[i] = NAN;      // set fifo to all empty
-		 self.fifoIndex = 0;
-	 }];
+    [self.observers addObject:
+     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationSignificantTimeChangeNotification
+                                                       object:nil queue:nil
+                                                   usingBlock:^
+      (NSNotification * note) {
+          NTP_Logging(@"Application -> SignificantTimeChange");
+          __strong typeof(weakSelf) strongSelf = weakSelf;
+          if (strongSelf) {
+              for (short i = 0; i < 8; i++) strongSelf->fifoQueue[i] = NAN;      // set fifo to all empty
+              strongSelf.fifoIndex = 0;
+          }
+      }]];
 }
 
 @end
